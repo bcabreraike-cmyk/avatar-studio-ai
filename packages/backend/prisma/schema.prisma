@@ -1,0 +1,285 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite" // Change to "postgresql" for production
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+// USERS & AUTHENTICATION
+// ============================================================================
+
+model User {
+  id                  String      @id @default(cuid())
+  email               String      @unique
+  passwordHash        String
+  name                String?
+  
+  // Subscription & Billing
+  subscriptionPlan    SubscriptionPlan @default(DEVELOPER)
+  stripeCustomerId    String?
+  accountStatus       AccountStatus    @default(ACTIVE)
+  
+  // API Authentication
+  apiKey              String?     @unique
+  apiKeyCreatedAt     DateTime?
+  
+  // Relations
+  apiKeys             ApiKey[]
+  subscription        Subscription?
+  usageLogs           UsageLog[]
+  monthlyUsage        MonthlyUsage[]
+  
+  createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @updatedAt
+  
+  @@index([email])
+  @@index([apiKey])
+}
+
+enum SubscriptionPlan {
+  DEVELOPER
+  STARTER
+  PRO
+  ENTERPRISE
+}
+
+enum AccountStatus {
+  ACTIVE
+  SUSPENDED
+  CANCELLED
+}
+
+// ============================================================================
+// API KEYS
+// ============================================================================
+
+model ApiKey {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  key         String    @unique
+  name        String?
+  lastUsedAt  DateTime?
+  isActive    Boolean   @default(true)
+  expiresAt   DateTime?
+  
+  createdAt   DateTime  @default(now())
+  
+  @@index([userId])
+  @@index([key])
+}
+
+// ============================================================================
+// SUBSCRIPTIONS
+// ============================================================================
+
+model Subscription {
+  id                    String      @id @default(cuid())
+  userId                String      @unique
+  user                  User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  plan                  SubscriptionPlan
+  stripeSubscriptionId  String?
+  stripePriceId         String?
+  status                SubscriptionStatus @default(ACTIVE)
+  
+  currentPeriodStart    DateTime
+  currentPeriodEnd      DateTime
+  cancelAtPeriodEnd     Boolean     @default(false)
+  
+  createdAt             DateTime    @default(now())
+  updatedAt             DateTime    @updatedAt
+  
+  @@index([userId])
+  @@index([stripeSubscriptionId])
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  PAST_DUE
+  CANCELLED
+  PAUSED
+}
+
+// ============================================================================
+// USAGE TRACKING
+// ============================================================================
+
+model UsageLog {
+  id              String      @id @default(cuid())
+  userId          String
+  user            User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  apiKeyId        String?
+  endpoint        String      // e.g., '/api/avatar/generate'
+  taskType        String      // 'avatar', 'scene', 'video', 'object', 'marketing'
+  status          UsageStatus // 'success', 'failed', 'rate_limited'
+  
+  responseTimeMs  Int?
+  tokensUsed      Int?
+  errorMessage    String?
+  
+  timestamp       DateTime    @default(now())
+  
+  @@index([userId])
+  @@index([timestamp])
+  @@index([endpoint])
+}
+
+enum UsageStatus {
+  SUCCESS
+  FAILED
+  RATE_LIMITED
+  UNAUTHORIZED
+}
+
+model MonthlyUsage {
+  id                String      @id @default(cuid())
+  userId            String
+  user              User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  month             DateTime    // First day of the month
+  
+  // Usage counters
+  avatarCount       Int         @default(0)
+  sceneCount        Int         @default(0)
+  videoCount        Int         @default(0)
+  objectCount       Int         @default(0)
+  marketingCount    Int         @default(0)
+  storageUsedGb     Decimal     @default(0) @db.Decimal(10, 2)
+  
+  // Timestamps
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+  
+  @@unique([userId, month])
+  @@index([userId])
+  @@index([month])
+}
+
+// ============================================================================
+// BILLING & INVOICES
+// ============================================================================
+
+model Invoice {
+  id                String      @id @default(cuid())
+  userId            String
+  
+  stripeInvoiceId   String?     @unique
+  amount            Decimal     @db.Decimal(10, 2)
+  currency          String      @default("USD")
+  status            InvoiceStatus
+  
+  pdfUrl            String?
+  
+  issuedAt          DateTime
+  dueAt             DateTime?
+  paidAt            DateTime?
+  
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+  
+  @@index([userId])
+  @@index([stripeInvoiceId])
+}
+
+enum InvoiceStatus {
+  DRAFT
+  OPEN
+  PAID
+  UNCOLLECTIBLE
+  VOID
+}
+
+// ============================================================================
+// PAYMENT METHODS
+// ============================================================================
+
+model PaymentMethod {
+  id              String    @id @default(cuid())
+  
+  stripePaymentMethodId String? @unique
+  brand           String?   // 'visa', 'mastercard', etc.
+  last4           String?
+  expiryMonth     Int?
+  expiryYear      Int?
+  isDefault       Boolean   @default(false)
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+}
+
+// ============================================================================
+// FEATURE FLAGS & PLAN LIMITS
+// ============================================================================
+
+model PlanLimits {
+  id                String      @id @default(cuid())
+  plan              SubscriptionPlan @unique
+  
+  // Rate limiting
+  requestsPerMinute Int
+  maxConcurrent     Int
+  
+  // Usage limits (monthly)
+  avatarsPerMonth   Int
+  scenesPerMonth    Int
+  videosPerMonth    Int
+  objectsPerMonth   Int
+  storageGb         Decimal     @db.Decimal(10, 2)
+  
+  // Features
+  multiGpuSupport   Boolean     @default(false)
+  customModels      Boolean     @default(false)
+  apiAccess         Boolean     @default(true)
+  uiAccess          Boolean     @default(true)
+  dockerSupport     Boolean     @default(false)
+  
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+}
+
+// ============================================================================
+// PROJECTS & RESULTS
+// ============================================================================
+
+model Project {
+  id              String    @id @default(cuid())
+  userId          String
+  
+  name            String
+  description     String?
+  status          ProjectStatus @default(ACTIVE)
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+}
+
+enum ProjectStatus {
+  ACTIVE
+  ARCHIVED
+  DELETED
+}
+
+model ProjectResult {
+  id              String    @id @default(cuid())
+  projectId       String
+  
+  type            String    // 'avatar', 'scene', 'video'
+  status          String    // 'processing', 'completed', 'failed'
+  
+  inputData       String?   @db.Text
+  outputData      String?   @db.Text
+  
+  storageSizeGb   Decimal   @default(0) @db.Decimal(10, 2)
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+}
